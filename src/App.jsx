@@ -5,11 +5,11 @@ import Layout from './components/Layout';
 import Login from './screens/Login';
 import Dashboard from './screens/Dashboard';
 import Events from './screens/Events';
+import PageEditor from './screens/PageEditor';
 import ComingSoon from './screens/ComingSoon';
 
 // Stub routes: nav works, but the screen is a Phase 2 placeholder.
 const STUBS = [
-  ['pages', 'Pages'],
   ['programs', 'Programs'],
   ['impact', 'Impact Stats'],
   ['donations', 'Donations'],
@@ -39,6 +39,7 @@ function Gate() {
         <Route element={<Layout />}>
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/events" element={<Events />} />
+          <Route path="/pages" element={<PageEditor />} />
           {STUBS.map(([path, title]) => (
             <Route key={path} path={`/${path}`} element={<ComingSoon title={title} />} />
           ))}

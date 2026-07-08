@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
@@ -28,6 +29,7 @@ function KpiCard({ label, value, delta, accent, deltaColor }) {
 
 export default function Dashboard() {
   const toast = useToast();
+  const navigate = useNavigate();
   const { profile } = useAuth();
 
   const [pubStatus, setPubStatus] = useState({ loading: true, error: null, data: null });
@@ -137,6 +139,13 @@ export default function Dashboard() {
             Manage events, review what's changed, and publish to the live site — all from here. This
             is the Phase 2 vertical slice: Dashboard and Events are wired to the live database.
           </p>
+          <button
+            className="btn btn-accent cta-btn"
+            onClick={() => navigate('/pages')}
+            style={{ marginTop: 18 }}
+          >
+            Open page editor →
+          </button>
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
