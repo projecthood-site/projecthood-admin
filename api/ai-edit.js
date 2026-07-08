@@ -294,11 +294,18 @@ export default async function handler(req, res) {
       }
     }
 
-    // 7) Respond.
+    // 7) Respond. Include the applied edits (trimmed) so the UI can show a
+    // human-readable before/after for review.
+    const TRIM = 400;
+    const appliedForClient = applied.map((e) => ({
+      find: e.find.length > TRIM ? e.find.slice(0, TRIM) + '…' : e.find,
+      replace: e.replace.length > TRIM ? e.replace.slice(0, TRIM) + '…' : e.replace,
+    }));
     return res.status(200).json({
       reply: reply || 'Done — I staged that change for your review.',
       summary,
       editsApplied,
+      applied: appliedForClient,
       skipped,
       commitSha,
     });

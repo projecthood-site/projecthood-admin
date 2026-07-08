@@ -13,6 +13,13 @@ const PAGES = [
 
 const SUGGESTIONS = ['Change the hero headline', 'Add a paragraph to the intro'];
 
+// Make an HTML fragment readable for a non-technical reviewer: drop tags,
+// collapse whitespace, and cap the length.
+function readable(html) {
+  const text = String(html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return text.length > 160 ? text.slice(0, 160) + '…' : text || '(empty)';
+}
+
 // A calm opening line from Claude, per page.
 function greeting(pageName) {
   return `Hi — I'm editing the ${pageName} page. Tell me what to change in plain English, and I'll stage it for your review.`;
@@ -69,7 +76,7 @@ export default function PageEditor() {
           role: 'assistant',
           text: body.reply || 'Done.',
           staged: body.editsApplied > 0
-            ? { count: body.editsApplied, summary: body.summary }
+            ? { count: body.editsApplied, summary: body.summary, applied: body.applied || [] }
             : null,
         },
       ]);
@@ -178,6 +185,19 @@ export default function PageEditor() {
                     {m.staged.summary && (
                       <div style={{ fontWeight: 500, marginTop: 3, color: 'var(--green-d)' }}>{m.staged.summary}</div>
                     )}
+                  </div>
+                )}
+                {m.staged && m.staged.applied && m.staged.applied.length > 0 && (
+                  <div style={{ background: '#fff', border: '1px solid var(--line)', borderRadius: 9, padding: '10px 12px' }}>
+                    <div className="label" style={{ marginBottom: 8 }}>What changed</div>
+                    {m.staged.applied.map((e, idx) => (
+                      <div key={idx} style={{ marginBottom: idx < m.staged.applied.length - 1 ? 10 : 0 }}>
+                        <div className="ms" style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--muted)' }}>Was</div>
+                        <div style={{ fontSize: 12.5, lineHeight: 1.4, color: 'var(--muted)', textDecoration: 'line-through', textDecorationColor: 'rgba(184,39,27,.5)' }}>{readable(e.find)}</div>
+                        <div className="ms" style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--green-d)', marginTop: 4 }}>Now</div>
+                        <div style={{ fontSize: 12.5, lineHeight: 1.4, color: 'var(--ink)' }}>{readable(e.replace)}</div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
