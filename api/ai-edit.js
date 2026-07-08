@@ -246,63 +246,96 @@ export default async function handler(req, res) {
 
     const { reply = '', summary = 'AI edit', edits = [] } = toolUse.input;
 
-    // 4) Apply edits — each "find" must occur exactly once.
-    let updatedHtml = originalHtml;
-    const applied = [];
-    const skipped = [];
-    for (const edit of Array.isArray(edits) ? edits : []) {
-      const find = (edit?.find ?? '').toString();
-      const replace = (edit?.replace ?? '').toString();
-      if (!find) {
-        skipped.push({ reason: 'empty-find', find });
-        continue;
+    // 4+5) Apply edits and commit to STAGING (never main), with retry on
+    //      concurrent-edit conflicts. Because all pages live in _build.py, two
+    //      people editing at once contend on the same file. If GitHub rejects our
+    //      commit because the file changed underneath us (409/422), we re-read the
+    //      latest _build.py, re-apply the SAME edits, and try again.
+    const applyEdits = (source) => {
+      let out = source;
+      const applied = [];
+      const skipped = [];
+      for (const edit of Array.isArray(edits) ? edits : []) {
+        const find = (edit?.find ?? '').toString();
+        const replace = (edit?.replace ?? '').toString();
+        if (!find) { skipped.push({ reason: 'empty-find', find }); continue; }
+        const occ = countOccurrences(out, find);
+        if (occ === 0) { skipped.push({ reason: 'not-found', find }); continue; }
+        if (occ > 1) { skipped.push({ reason: 'not-unique', find }); continue; }
+        out = out.replace(find, replace);
+        applied.push({ find, replace });
       }
-      const occ = countOccurrences(updatedHtml, find);
-      if (occ === 0) {
-        skipped.push({ reason: 'not-found', find });
-        continue;
+      return { out, applied, skipped };
+    };
+
+    let currentSha = sha;
+    let currentSource = originalHtml;
+    let commitSha = null;
+    let applied = [];
+    let skipped = [];
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const r = applyEdits(currentSource);
+      applied = r.applied;
+      skipped = r.skipped;
+
+      // Nothing safely applied — either the request wasn't actionable, or another
+      // edit just changed the same text. Commit nothing.
+      if (applied.length === 0) {
+        return res.status(200).json({
+          reply: reply || "I couldn't apply that safely — the page may have just been edited by someone else. Please try again.",
+          summary,
+          editsApplied: 0,
+          skipped,
+          commitSha: null,
+        });
       }
-      if (occ > 1) {
-        skipped.push({ reason: 'not-unique', find });
-        continue;
+
+      const putRes = await fetch(`${GH_API}/repos/${repo}/contents/${encodeURIComponent(BUILD_FILE)}`, {
+        method: 'PUT',
+        headers: { ...ghHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: `AI edit (${page}): ${summary}`,
+          content: Buffer.from(r.out, 'utf8').toString('base64'),
+          sha: currentSha,
+          branch: staging,
+        }),
+      });
+
+      if (putRes.ok) {
+        const putData = await putRes.json();
+        commitSha = putData.commit?.sha || null;
+        break;
       }
-      updatedHtml = updatedHtml.replace(find, replace);
-      applied.push({ find, replace });
+
+      // Conflict — someone else committed between our read and write. Re-read + retry.
+      if (putRes.status === 409 || putRes.status === 422) {
+        const reRead = await fetch(getUrl, { headers: ghHeaders() });
+        if (reRead.ok) {
+          const fd = await reRead.json();
+          currentSha = fd.sha;
+          currentSource = Buffer.from(fd.content || '', 'base64').toString('utf8');
+          continue;
+        }
+      }
+
+      // Any other error — fail out.
+      const text = await putRes.text();
+      console.error('[ai-edit] GitHub commit failed:', putRes.status, text);
+      return res.status(putRes.status).json({ error: `Couldn't save the change to GitHub: ${text}` });
     }
 
-    const editsApplied = applied.length;
-
-    // No edits applied — return the reply, commit nothing.
-    if (editsApplied === 0) {
-      return res.status(200).json({
-        reply: reply || "I wasn't able to make that change automatically. Could you rephrase it?",
-        summary,
+    // Still not committed after retries — a persistent conflict.
+    if (!commitSha) {
+      return res.status(409).json({
+        error: "Someone else is editing right now and your change couldn't be saved. Please send it again.",
         editsApplied: 0,
         skipped,
         commitSha: null,
       });
     }
 
-    // 5) Commit the updated file to STAGING (never main).
-    const putRes = await fetch(`${GH_API}/repos/${repo}/contents/${encodeURIComponent(BUILD_FILE)}`, {
-      method: 'PUT',
-      headers: { ...ghHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: `AI edit (${page}): ${summary}`,
-        content: Buffer.from(updatedHtml, 'utf8').toString('base64'),
-        sha,
-        branch: staging,
-      }),
-    });
-
-    if (!putRes.ok) {
-      const text = await putRes.text();
-      console.error('[ai-edit] GitHub commit failed:', putRes.status, text);
-      return res.status(putRes.status).json({ error: `Couldn't save the change to GitHub: ${text}` });
-    }
-
-    const putData = await putRes.json();
-    const commitSha = putData.commit?.sha || null;
+    const editsApplied = applied.length;
 
     // 6) Best-effort activity_log entry (service role bypasses RLS).
     if (supabaseUrl && serviceKey) {
