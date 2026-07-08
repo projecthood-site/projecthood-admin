@@ -6,6 +6,11 @@ const NAV = [
   { label: 'Website', items: [['/pages', 'Edit Pages'], ['/dashboard', 'Publish & Status']] },
 ];
 
+// Owner-only navigation. Non-owners never see these.
+const OWNER_NAV = [
+  { label: 'Admin', items: [['/team', 'Team & Roles']] },
+];
+
 function initials(name, email) {
   const source = (name || email || '?').trim();
   const parts = source.split(/\s+/);
@@ -17,6 +22,9 @@ export default function Sidebar() {
   const { user, profile, signOut } = useAuth();
   const name = profile?.full_name || user?.email || 'Signed in';
   const role = profile?.role ? profile.role[0].toUpperCase() + profile.role.slice(1) : 'Loading role…';
+
+  // Owners get the Admin group (Team & Roles) appended.
+  const nav = profile?.role === 'owner' ? [...NAV, ...OWNER_NAV] : NAV;
 
   return (
     <aside
@@ -40,7 +48,7 @@ export default function Sidebar() {
       </div>
 
       <nav className="scroll" style={{ flex: 1, overflowY: 'auto', padding: '6px 12px 20px' }}>
-        {NAV.map((group) => (
+        {nav.map((group) => (
           <div key={group.label}>
             <div className="navcap">{group.label}</div>
             {group.items.map(([to, label]) => (

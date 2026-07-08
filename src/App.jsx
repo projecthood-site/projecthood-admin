@@ -5,10 +5,11 @@ import Layout from './components/Layout';
 import Login from './screens/Login';
 import Dashboard from './screens/Dashboard';
 import PageEditor from './screens/PageEditor';
+import Team from './screens/Team';
 
 // Team-test scope: only website editing is exposed. Old screens are removed
 // from the app; their routes redirect to /dashboard so stale links don't 404.
-const RETIRED = ['programs', 'impact', 'donations', 'events', 'stories', 'media', 'volunteers', 'team', 'settings'];
+const RETIRED = ['programs', 'impact', 'donations', 'events', 'stories', 'media', 'volunteers', 'settings'];
 
 function Gate() {
   const { session, loading } = useAuth();
@@ -29,6 +30,7 @@ function Gate() {
         <Route element={<Layout />}>
           <Route path="/pages" element={<PageEditor />} />
           <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/team" element={<Team />} />
           {RETIRED.map((path) => (
             <Route key={path} path={`/${path}`} element={<Navigate to="/dashboard" replace />} />
           ))}
