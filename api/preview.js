@@ -13,13 +13,27 @@ const GH_API = 'https://api.github.com';
 
 // Only these exact repo-relative paths may be previewed. Prevents arbitrary
 // path traversal / SSRF via the `page` query param.
+// IMPORTANT: this set MUST stay in sync with the PAGES array in
+// src/screens/PageEditor.jsx (they define the same editable-page set).
 const ALLOWED_PAGES = new Set([
   'index.html',
   'programs.html',
   'impact.html',
   'donate.html',
+  'ways-to-give.html',
   'get-involved.html',
+  'get-help.html',
   'about.html',
+  'exec-director.html',
+  'leo-center.html',
+  'workforce-development.html',
+  'reentry-services.html',
+  'violence-prevention.html',
+  'youth-programming.html',
+  'health-wellness.html',
+  'news.html',
+  'partner.html',
+  'contact.html',
 ]);
 
 function ghHeaders() {

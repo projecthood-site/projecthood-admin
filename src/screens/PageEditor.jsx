@@ -2,13 +2,27 @@ import { useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 
 // Curated list of editable pages: display name -> repo-relative path.
+// IMPORTANT: this set MUST stay in sync with the ALLOWED_PAGES allowlist in
+// api/preview.js (preview.js validates the page against that list for security).
 const PAGES = [
   { name: 'Home', path: 'index.html' },
   { name: 'Programs', path: 'programs.html' },
   { name: 'Our Impact', path: 'impact.html' },
   { name: 'Donate', path: 'donate.html' },
+  { name: 'Ways to Give', path: 'ways-to-give.html' },
   { name: 'Get Involved', path: 'get-involved.html' },
+  { name: 'Get Help', path: 'get-help.html' },
   { name: 'About', path: 'about.html' },
+  { name: 'Executive Director', path: 'exec-director.html' },
+  { name: 'LEO Center', path: 'leo-center.html' },
+  { name: 'Workforce Development', path: 'workforce-development.html' },
+  { name: 'Re-Entry Services', path: 'reentry-services.html' },
+  { name: 'Violence Prevention', path: 'violence-prevention.html' },
+  { name: 'Youth Programming', path: 'youth-programming.html' },
+  { name: 'Health & Wellness', path: 'health-wellness.html' },
+  { name: 'News', path: 'news.html' },
+  { name: 'Partner', path: 'partner.html' },
+  { name: 'Contact', path: 'contact.html' },
 ];
 
 const SUGGESTIONS = ['Change the hero headline', 'Add a paragraph to the intro'];

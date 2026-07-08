@@ -7,11 +7,12 @@ import Dashboard from './screens/Dashboard';
 import PageEditor from './screens/PageEditor';
 import Team from './screens/Team';
 import Events from './screens/Events';
+import Media from './screens/Media';
 import RsvpPage from './screens/RsvpPage';
 
-// Team-test scope: website editing + Community/Events. Other old screens are
-// removed; their routes redirect to /dashboard so stale links don't 404.
-const RETIRED = ['programs', 'impact', 'donations', 'stories', 'media', 'volunteers', 'settings'];
+// Team-test scope: website editing + Media library + Community/Events. Other old
+// screens are removed; their routes redirect to /dashboard so stale links don't 404.
+const RETIRED = ['programs', 'impact', 'donations', 'stories', 'volunteers', 'settings'];
 
 // Authenticated admin. Everything here requires a signed-in staff session.
 function AdminGate() {
@@ -34,6 +35,7 @@ function AdminGate() {
           <Route path="/pages" element={<PageEditor />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/events" element={<Events />} />
+          <Route path="/media" element={<Media />} />
           <Route path="/team" element={<Team />} />
           {RETIRED.map((path) => (
             <Route key={path} path={`/${path}`} element={<Navigate to="/dashboard" replace />} />

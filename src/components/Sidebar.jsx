@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 // and visible to every signed-in staff member.
 const NAV = [
   { label: 'Website', items: [['/pages', 'Edit Pages'], ['/dashboard', 'Publish & Status']] },
+  { label: 'Library', items: [['/media', 'Media']] },
   { label: 'Community', items: [['/events', 'Events']] },
 ];
 
