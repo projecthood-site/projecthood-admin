@@ -1,0 +1,54 @@
+/* ============================================================
+   Project H.O.O.D. — design tokens (ported from the calm admin prototype)
+   ============================================================ */
+@font-face {
+  font-family: "Akkordeon Nine";
+  src: url("/assets/fonts/Akkordeon-Nine.woff2") format("woff2"),
+       url("/assets/fonts/Akkordeon-Nine.woff") format("woff");
+  font-weight: 400 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Freight Micro Pro";
+  src: url("/assets/fonts/FreightMicroPro-Book.otf") format("opentype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Freight Micro Pro";
+  src: url("/assets/fonts/FreightMicroPro-Bold.otf") format("opentype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  /* brand */
+  --green: #006a63;
+  --red: #ef4032;
+  --red-ink: #b8271b;
+  --yellow: #fbe14c;
+  --purple: #712f6b;
+  --blue: #3face1;
+  /* ink + surfaces */
+  --ink: #231f21;
+  --body: #3a3538;
+  --muted: #565157;
+  --faint: #9a9599;
+  --line: #ececea;
+  --bg: #f6f6f4;
+  --card: #ffffff;
+  --field: #f2f1ee;
+  /* soft status tints */
+  --green-t: #e3efed;
+  --green-d: #05564f;
+  --amber-t: #fdf3cf;
+  --amber-d: #6b5600;
+  --neutral-t: #eceae7;
+  --purple-t: #efe6ef;
+  --purple-d: #5c2657;
+  --blue-t: #e2eff7;
+  --blue-d: #1f6d95;
+}
