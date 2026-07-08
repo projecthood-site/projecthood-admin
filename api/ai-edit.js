@@ -13,8 +13,12 @@
 // Reuses the browser anon key (SUPABASE_ANON_KEY | VITE_SUPABASE_ANON_KEY)
 // purely to verify the caller's access token.
 import { createClient } from '@supabase/supabase-js';
+import { getAuthedUser } from '../server/auth.js';
 
 const GH_API = 'https://api.github.com';
+
+// Roles allowed to make edits (edits land on staging only).
+const EDIT_ROLES = new Set(['owner', 'editor', 'author']);
 const ANTHROPIC_API = 'https://api.anthropic.com/v1/messages';
 
 function ghHeaders() {
@@ -135,18 +139,22 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 1) AUTH GATE — require a valid Supabase access token.
-    const authHeader = req.headers.authorization || req.headers.Authorization || '';
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
-    if (!token) {
-      return res.status(401).json({ error: 'Not signed in. Please sign in and try again.' });
+    // 1) AUTH GATE — require a valid Supabase session, then require an
+    //    edit-capable role. Viewers (and anything else) are read-only.
+    const authed = await getAuthedUser(req);
+    if (authed.error) {
+      if (authed.error === 'unauthenticated') {
+        return res.status(401).json({ error: 'Not signed in. Please sign in and try again.' });
+      }
+      if (authed.error === 'invalid') {
+        return res.status(401).json({ error: 'Your session is invalid or expired. Please sign in again.' });
+      }
+      return res.status(500).json({ error: 'AI editor is not configured (auth).' });
     }
-    const authClient = createClient(supabaseUrl, anonKey);
-    const { data: userData, error: userErr } = await authClient.auth.getUser(token);
-    if (userErr || !userData?.user) {
-      return res.status(401).json({ error: 'Your session is invalid or expired. Please sign in again.' });
+    if (!EDIT_ROLES.has(authed.role)) {
+      return res.status(403).json({ error: 'Your account is read-only. Ask an owner for editor access.' });
     }
-    const actor = userData.user.id;
+    const actor = authed.userId;
 
     // Validate body.
     const body = await readBody(req);

@@ -5,8 +5,12 @@
 // Server-only env: GITHUB_TOKEN, GITHUB_REPO, GITHUB_STAGING_BRANCH,
 // GITHUB_MAIN_BRANCH, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY.
 import { createClient } from '@supabase/supabase-js';
+import { getAuthedUser } from '../server/auth.js';
 
 const GH_API = 'https://api.github.com';
+
+// Roles allowed to publish (merge staging -> live main).
+const PUBLISH_ROLES = new Set(['owner', 'editor']);
 
 function ghHeaders() {
   return {
@@ -33,6 +37,15 @@ export default async function handler(req, res) {
   }
 
   try {
+    // AUTH GATE — every request must be a valid signed-in user.
+    const authed = await getAuthedUser(req);
+    if (authed.error) {
+      if (authed.error === 'not-configured') {
+        return res.status(500).json({ error: 'Publish service is not configured (auth).' });
+      }
+      return res.status(401).json({ error: 'Please sign in.' });
+    }
+
     if (req.method === 'GET') {
       // Compare main...staging to count commits ahead.
       const url = `${GH_API}/repos/${repo}/compare/${encodeURIComponent(main)}...${encodeURIComponent(staging)}`;
@@ -52,6 +65,10 @@ export default async function handler(req, res) {
     }
 
     if (req.method === 'POST') {
+      // Publishing to live requires Editor or Owner.
+      if (!PUBLISH_ROLES.has(authed.role)) {
+        return res.status(403).json({ error: 'You need Editor or Owner access to publish changes.' });
+      }
       const commit_message = `Publish: merge ${staging} into ${main} via admin`;
       const r = await fetch(`${GH_API}/repos/${repo}/merges`, {
         method: 'POST',
@@ -78,7 +95,7 @@ export default async function handler(req, res) {
       if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
         try {
           const admin = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
-          await admin.from('publish_log').insert({ merged_sha: sha, summary: commit_message });
+          await admin.from('publish_log').insert({ merged_sha: sha, summary: commit_message, actor: authed.userId });
         } catch (logErr) {
           console.error('[publish] publish_log insert failed:', logErr);
         }

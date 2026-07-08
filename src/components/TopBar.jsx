@@ -14,17 +14,6 @@ export default function TopBar({ kicker, title }) {
         </h1>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 'none' }}>
-        <div
-          className="ms"
-          style={{
-            display: 'flex', alignItems: 'center', gap: 8, background: '#fff',
-            border: '1px solid var(--line)', borderRadius: 9, padding: '9px 13px',
-            width: 210, color: 'var(--faint)', fontSize: 13,
-          }}
-        >
-          <span style={{ width: 11, height: 11, border: '2px solid #c3bfc1', borderRadius: 999 }} />
-          Search…
-        </div>
         <a
           href="https://projecthood.org"
           target="_blank"

@@ -4,21 +4,11 @@ import { ToastProvider } from './context/ToastContext';
 import Layout from './components/Layout';
 import Login from './screens/Login';
 import Dashboard from './screens/Dashboard';
-import Events from './screens/Events';
 import PageEditor from './screens/PageEditor';
-import ComingSoon from './screens/ComingSoon';
 
-// Stub routes: nav works, but the screen is a Phase 2 placeholder.
-const STUBS = [
-  ['programs', 'Programs'],
-  ['impact', 'Impact Stats'],
-  ['donations', 'Donations'],
-  ['stories', 'News & Stories'],
-  ['media', 'Media'],
-  ['volunteers', 'Volunteers'],
-  ['team', 'Team & Roles'],
-  ['settings', 'Settings'],
-];
+// Team-test scope: only website editing is exposed. Old screens are removed
+// from the app; their routes redirect to /dashboard so stale links don't 404.
+const RETIRED = ['programs', 'impact', 'donations', 'events', 'stories', 'media', 'volunteers', 'team', 'settings'];
 
 function Gate() {
   const { session, loading } = useAuth();
@@ -37,14 +27,13 @@ function Gate() {
     <ToastProvider>
       <Routes>
         <Route element={<Layout />}>
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/events" element={<Events />} />
           <Route path="/pages" element={<PageEditor />} />
-          {STUBS.map(([path, title]) => (
-            <Route key={path} path={`/${path}`} element={<ComingSoon title={title} />} />
+          <Route path="/dashboard" element={<Dashboard />} />
+          {RETIRED.map((path) => (
+            <Route key={path} path={`/${path}`} element={<Navigate to="/dashboard" replace />} />
           ))}
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route path="/" element={<Navigate to="/pages" replace />} />
+          <Route path="*" element={<Navigate to="/pages" replace />} />
         </Route>
       </Routes>
     </ToastProvider>

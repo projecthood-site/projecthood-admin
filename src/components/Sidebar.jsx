@@ -1,15 +1,9 @@
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
-// Nav groups mirror the prototype. Only /dashboard and /events are "real";
-// everything else routes to an on-brand "Coming soon" stub.
+// Team-test scope: website editing only. Both routes are real.
 const NAV = [
-  { label: 'Main', items: [['/dashboard', 'Dashboard']] },
-  { label: 'Content', items: [['/pages', 'Pages'], ['/programs', 'Programs'], ['/impact', 'Impact Stats']] },
-  { label: 'Community', items: [['/donations', 'Donations'], ['/events', 'Events'], ['/stories', 'News & Stories']] },
-  { label: 'Library', items: [['/media', 'Media']] },
-  { label: 'People', items: [['/volunteers', 'Volunteers'], ['/team', 'Team & Roles']] },
-  { label: 'System', items: [['/settings', 'Settings']] },
+  { label: 'Website', items: [['/pages', 'Edit Pages'], ['/dashboard', 'Publish & Status']] },
 ];
 
 function initials(name, email) {
