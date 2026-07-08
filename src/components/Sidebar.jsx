@@ -1,9 +1,11 @@
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
-// Team-test scope: website editing only. Both routes are real.
+// Team-test scope: website editing + community events. All routes are real
+// and visible to every signed-in staff member.
 const NAV = [
   { label: 'Website', items: [['/pages', 'Edit Pages'], ['/dashboard', 'Publish & Status']] },
+  { label: 'Community', items: [['/events', 'Events']] },
 ];
 
 // Owner-only navigation. Non-owners never see these.
