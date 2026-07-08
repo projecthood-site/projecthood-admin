@@ -30,12 +30,29 @@ export default function PageEditor() {
   const [messages, setMessages] = useState([{ role: 'assistant', text: greeting(PAGES[0].name) }]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  // Cache-buster for the preview iframe; bump it to force a reload.
+  const [refreshKey, setRefreshKey] = useState(0);
+  // Track viewport width so we can stack the columns on narrow screens.
+  const [isWide, setIsWide] = useState(
+    typeof window !== 'undefined' ? window.innerWidth >= 1000 : true
+  );
   const listRef = useRef(null);
 
-  // Reset the conversation when the page changes.
+  // Watch for the 1000px breakpoint (preview beside chat vs. stacked).
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const mq = window.matchMedia('(min-width: 1000px)');
+    const onChange = (e) => setIsWide(e.matches);
+    setIsWide(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  // Reset the conversation when the page changes, and refresh the preview.
   useEffect(() => {
     setMessages([{ role: 'assistant', text: greeting(selected.name) }]);
     setInput('');
+    setRefreshKey((k) => k + 1);
   }, [selected.path]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep the chat scrolled to the latest message.
@@ -80,6 +97,12 @@ export default function PageEditor() {
             : null,
         },
       ]);
+
+      // If something was staged, refresh the preview after a short delay so
+      // GitHub reflects the new commit before we reload the iframe.
+      if (body.editsApplied > 0) {
+        setTimeout(() => setRefreshKey((k) => k + 1), 1200);
+      }
     } catch (err) {
       setMessages((m) => [...m, { role: 'assistant', error: true, text: err.message || 'Something went wrong.' }]);
     } finally {
@@ -95,7 +118,7 @@ export default function PageEditor() {
   }
 
   return (
-    <div style={{ maxWidth: 1040, margin: '0 auto' }}>
+    <div style={{ maxWidth: 1240, margin: '0 auto' }}>
       {/* Helper line */}
       <p className="note" style={{ margin: '0 0 16px', lineHeight: 1.6, maxWidth: '70ch' }}>
         Describe a change in plain English. Claude edits the selected page and stages it for your
@@ -127,13 +150,80 @@ export default function PageEditor() {
         })}
       </div>
 
-      {/* Claude chat panel (dark), styled after the Phase 1 prototype */}
+      {/* Two columns on wide screens: preview (flex) + chat (fixed). Stacked below 1000px. */}
       <div
         style={{
-          background: 'var(--ink)', borderRadius: 12, display: 'flex',
-          flexDirection: 'column', height: 620, overflow: 'hidden',
+          display: 'flex',
+          flexDirection: isWide ? 'row' : 'column',
+          alignItems: 'stretch',
+          gap: 16,
         }}
       >
+        {/* LEFT — live staging preview */}
+        <div
+          className="card"
+          style={{
+            flex: isWide ? '1 1 auto' : 'none',
+            minWidth: 0,
+            height: 640,
+            display: 'flex',
+            flexDirection: 'column',
+            padding: 0,
+            overflow: 'hidden',
+            background: '#fff',
+            border: '1px solid var(--line)',
+            borderRadius: 12,
+          }}
+        >
+          {/* Header strip */}
+          <div
+            style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: '11px 14px', borderBottom: '1px solid var(--line)',
+            }}
+          >
+            <span className="label" style={{ margin: 0 }}>Live preview · staging</span>
+            <button
+              className="ms"
+              type="button"
+              onClick={() => setRefreshKey((k) => k + 1)}
+              style={{
+                marginLeft: 'auto', fontWeight: 700, fontSize: 11, letterSpacing: '.02em',
+                border: '1px solid var(--line)', background: '#fff', color: 'var(--ink)',
+                borderRadius: 999, padding: '5px 12px', cursor: 'pointer',
+              }}
+            >
+              Refresh
+            </button>
+          </div>
+          {/* Note */}
+          <div
+            className="ms"
+            style={{
+              padding: '7px 14px', fontSize: 11, fontWeight: 500, color: 'var(--muted)',
+              borderBottom: '1px solid var(--line)', lineHeight: 1.4,
+            }}
+          >
+            Shows staged changes. Nothing here is live until you Publish.
+          </div>
+          {/* The preview itself */}
+          <iframe
+            key={refreshKey}
+            title={`Live staging preview of ${selected.name}`}
+            src={`/api/preview?page=${encodeURIComponent(selected.path)}&t=${refreshKey}`}
+            style={{ flex: 1, width: '100%', border: 'none', background: '#fff' }}
+          />
+        </div>
+
+        {/* RIGHT — Claude chat panel (dark), styled after the Phase 1 prototype */}
+        <div
+          style={{
+            flex: 'none',
+            width: isWide ? 380 : '100%',
+            background: 'var(--ink)', borderRadius: 12, display: 'flex',
+            flexDirection: 'column', height: 640, overflow: 'hidden',
+          }}
+        >
         {/* Header */}
         <div style={{ padding: '14px 16px', borderBottom: '1px solid rgba(226,228,225,.14)', display: 'flex', alignItems: 'center', gap: 10 }}>
           <span
@@ -270,7 +360,10 @@ export default function PageEditor() {
             </button>
           </div>
         </div>
+        {/* end right chat column */}
+        </div>
       </div>
+      {/* end two-column layout */}
     </div>
   );
 }
