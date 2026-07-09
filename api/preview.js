@@ -45,6 +45,24 @@ function ghHeaders() {
   };
 }
 
+// The GitHub Contents API intermittently returns transient upstream errors
+// (502/503/504) or secondary rate limits (429), which previously broke the
+// preview outright. Retry a few times with exponential backoff before failing.
+async function ghFetch(url, options = {}, { retries = 3 } = {}) {
+  let res;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    res = await fetch(url, options);
+    const transient = res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504;
+    if (!transient || attempt === retries) return res;
+    const retryAfter = Number(res.headers.get('retry-after'));
+    const delay = Number.isFinite(retryAfter) && retryAfter > 0
+      ? Math.min(retryAfter * 1000, 4000)
+      : Math.min(400 * 2 ** attempt, 4000);
+    await new Promise((r) => setTimeout(r, delay));
+  }
+  return res;
+}
+
 function cfg() {
   return {
     repo: process.env.GITHUB_REPO,
@@ -101,7 +119,7 @@ export default async function handler(req, res) {
   try {
     // 2) Fetch the file FRESH from the staging branch via the Contents API.
     const getUrl = `${GH_API}/repos/${repo}/contents/${encodeURIComponent(page)}?ref=${encodeURIComponent(staging)}`;
-    const getRes = await fetch(getUrl, { headers: ghHeaders() });
+    const getRes = await ghFetch(getUrl, { headers: ghHeaders() });
 
     if (getRes.status === 404) {
       return sendHtml(
@@ -112,10 +130,14 @@ export default async function handler(req, res) {
     }
     if (!getRes.ok) {
       const text = await getRes.text().catch(() => '');
+      console.error('[preview] GitHub read failed:', getRes.status, text.slice(0, 200));
       return sendHtml(
         res,
         502,
-        noticeHtml('Could not load preview', `GitHub returned an error (${getRes.status}). ${text.slice(0, 200)}`)
+        noticeHtml(
+          'Preview temporarily unavailable',
+          `GitHub is having a hiccup (error ${getRes.status}). This is temporary — click Refresh in a moment. Your saved changes are safe.`
+        )
       );
     }
 

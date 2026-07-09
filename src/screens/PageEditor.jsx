@@ -101,20 +101,25 @@ export default function PageEditor() {
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || `Something went wrong (status ${res.status}).`);
 
+      // A change only truly happened if the server committed it. Never treat the
+      // model's chatty reply alone as success — require a real commit + applied
+      // edits. Otherwise show it as a warning so "nothing saved" can't look done.
+      const saved = body.ok === true && body.editsApplied > 0 && !!body.commitSha;
+
       setMessages((m) => [
         ...m,
         {
           role: 'assistant',
-          text: body.reply || 'Done.',
-          staged: body.editsApplied > 0
+          error: !saved,
+          text: body.reply || (saved ? 'Done.' : "That didn't go through — nothing was saved."),
+          staged: saved
             ? { count: body.editsApplied, summary: body.summary, applied: body.applied || [] }
             : null,
         },
       ]);
 
-      // If something was staged, refresh the preview after a short delay so
-      // GitHub reflects the new commit before we reload the iframe.
-      if (body.editsApplied > 0) {
+      // Only refresh the preview when a commit actually landed.
+      if (saved) {
         setTimeout(() => setRefreshKey((k) => k + 1), 1200);
       }
     } catch (err) {

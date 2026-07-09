@@ -30,6 +30,25 @@ function ghHeaders() {
   };
 }
 
+// GitHub's Contents API intermittently returns transient upstream errors
+// (502/503/504) and secondary rate limits (429). Those are exactly the failures
+// that used to surface as a broken preview or a silent no-op edit. Retry them a
+// few times with exponential backoff before giving up. Safe for idempotent GETs.
+async function ghFetch(url, options = {}, { retries = 3 } = {}) {
+  let res;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    res = await fetch(url, options);
+    const transient = res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504;
+    if (!transient || attempt === retries) return res;
+    const retryAfter = Number(res.headers.get('retry-after'));
+    const delay = Number.isFinite(retryAfter) && retryAfter > 0
+      ? Math.min(retryAfter * 1000, 4000)
+      : Math.min(400 * 2 ** attempt, 4000);
+    await new Promise((r) => setTimeout(r, delay));
+  }
+  return res;
+}
+
 function cfg() {
   return {
     repo: process.env.GITHUB_REPO,
@@ -186,10 +205,15 @@ export default async function handler(req, res) {
     //    so edits must be made in _build.py to persist through the rebuild.
     const BUILD_FILE = '_build.py';
     const getUrl = `${GH_API}/repos/${repo}/contents/${encodeURIComponent(BUILD_FILE)}?ref=${encodeURIComponent(staging)}`;
-    const getRes = await fetch(getUrl, { headers: ghHeaders() });
+    const getRes = await ghFetch(getUrl, { headers: ghHeaders() });
     if (!getRes.ok) {
-      const text = await getRes.text();
-      return res.status(getRes.status).json({ error: `Couldn't read the site source from GitHub: ${text}` });
+      const text = await getRes.text().catch(() => '');
+      const status = getRes.status;
+      const msg = status >= 500 || status === 429
+        ? "GitHub is temporarily unavailable, so nothing was changed. Please try again in a moment."
+        : `Couldn't read the site source from GitHub (${status}). Nothing was changed.`;
+      console.error('[ai-edit] GitHub read failed:', status, text.slice(0, 200));
+      return res.status(status === 429 ? 503 : status).json({ ok: false, error: msg });
     }
     const fileData = await getRes.json();
     const sha = fileData.sha;
@@ -279,11 +303,31 @@ export default async function handler(req, res) {
       applied = r.applied;
       skipped = r.skipped;
 
-      // Nothing safely applied — either the request wasn't actionable, or another
-      // edit just changed the same text. Commit nothing.
+      // Nothing safely applied. CRITICAL: do NOT pass through the model's reply
+      // here — the model often says "Done!" while its find/replace text never
+      // actually matched the source, which used to read as a false success.
+      // Tell the user plainly that nothing was saved, and why.
       if (applied.length === 0) {
+        const attempted = Array.isArray(edits) && edits.length > 0;
+        let honest;
+        if (attempted) {
+          const reasons = new Set(skipped.map((s) => s.reason));
+          const detail = reasons.has('not-found')
+            ? " I couldn't find the exact text to change on that page."
+            : reasons.has('not-unique')
+              ? " The text I matched appears in more than one place, so I didn't change it to avoid editing the wrong spot."
+              : '';
+          honest = `I wasn't able to make that change, so nothing was saved.${detail} Try quoting the exact words you want changed, and I'll try again.`;
+        } else {
+          // The model deliberately declined (empty edits) — keep its explanation
+          // but make it unmistakable that nothing was saved.
+          honest = (reply && reply.trim())
+            ? `${reply.trim()}\n\n(Nothing was saved.)`
+            : "I didn't make that change, so nothing was saved.";
+        }
         return res.status(200).json({
-          reply: reply || "I couldn't apply that safely — the page may have just been edited by someone else. Please try again.",
+          ok: false,
+          reply: honest,
           summary,
           editsApplied: 0,
           skipped,
@@ -310,7 +354,7 @@ export default async function handler(req, res) {
 
       // Conflict — someone else committed between our read and write. Re-read + retry.
       if (putRes.status === 409 || putRes.status === 422) {
-        const reRead = await fetch(getUrl, { headers: ghHeaders() });
+        const reRead = await ghFetch(getUrl, { headers: ghHeaders() });
         if (reRead.ok) {
           const fd = await reRead.json();
           currentSha = fd.sha;
@@ -359,6 +403,7 @@ export default async function handler(req, res) {
       replace: e.replace.length > TRIM ? e.replace.slice(0, TRIM) + '…' : e.replace,
     }));
     return res.status(200).json({
+      ok: true,
       reply: reply || 'Done — I staged that change for your review.',
       summary,
       editsApplied,
