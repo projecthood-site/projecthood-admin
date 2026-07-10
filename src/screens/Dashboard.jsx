@@ -62,6 +62,10 @@ export default function Dashboard() {
   }
 
   const ahead = pubStatus.data?.ahead_by ?? 0;
+  const changes = pubStatus.data?.changes ?? [];
+  // Prefer the count of meaningful edits; fall back to the raw commit count if
+  // parsing yielded nothing (e.g. only build/merge commits are pending).
+  const displayCount = pubStatus.data?.change_count || ahead;
   const hasPending = ahead > 0;
 
   return (
@@ -130,7 +134,7 @@ export default function Dashboard() {
                   className="ms"
                   style={{ marginTop: 12, background: 'var(--amber-t)', border: '1px solid #e7d98f', borderRadius: 9, padding: '10px 12px', fontWeight: 600, fontSize: 12, color: 'var(--amber-d)' }}
                 >
-                  {ahead} unpublished change{ahead === 1 ? '' : 's'} waiting
+                  {displayCount} unpublished change{displayCount === 1 ? '' : 's'} waiting
                 </div>
               ) : (
                 <div
@@ -164,15 +168,51 @@ export default function Dashboard() {
         <Modal title="Publish to the live site?" onClose={() => (publishing ? null : setShowPublish(false))}>
           <div style={{ padding: '20px 22px' }}>
             <div className="label" style={{ marginBottom: 10 }}>
-              {ahead} change{ahead === 1 ? '' : 's'} will go live
+              {displayCount} change{displayCount === 1 ? '' : 's'} will go live
             </div>
-            {pubStatus.data?.last_commit_message && (
+            {changes.length > 0 ? (
+              <ul
+                className="scroll"
+                style={{ listStyle: 'none', margin: '0 0 16px', padding: 0, maxHeight: 280, overflowY: 'auto' }}
+              >
+                {changes.slice(0, 30).map((c, i) => {
+                  const shown = Math.min(changes.length, 30);
+                  return (
+                    <li
+                      key={i}
+                      style={{
+                        display: 'flex', gap: 9, alignItems: 'baseline',
+                        padding: '8px 0', borderBottom: i < shown - 1 ? '1px solid var(--line)' : 'none',
+                      }}
+                    >
+                      <span style={{ color: 'var(--green-d)', fontWeight: 800, flex: 'none', fontSize: 12 }}>✓</span>
+                      <span style={{ fontSize: 13.5, lineHeight: 1.45, color: 'var(--body)' }}>
+                        {c.text}
+                        {c.page && (
+                          <span
+                            className="ms"
+                            style={{ marginLeft: 7, fontSize: 10, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted)' }}
+                          >
+                            {c.page}
+                          </span>
+                        )}
+                      </span>
+                    </li>
+                  );
+                })}
+                {changes.length > 30 && (
+                  <li style={{ padding: '8px 0', fontSize: 12.5, color: 'var(--muted)' }}>
+                    + {changes.length - 30} more…
+                  </li>
+                )}
+              </ul>
+            ) : pubStatus.data?.last_commit_message ? (
               <p style={{ fontSize: 14, lineHeight: 1.5, color: 'var(--body)', margin: '0 0 16px' }}>
                 Latest: “{pubStatus.data.last_commit_message}”
               </p>
-            )}
+            ) : null}
             <div style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--muted)', background: 'var(--field)', borderRadius: 9, padding: '11px 13px' }}>
-              This merges your staged changes into <strong style={{ color: 'var(--ink)' }}>projecthood.org</strong>.
+              This merges the changes above into <strong style={{ color: 'var(--ink)' }}>projecthood.org</strong>. Nothing else changes.
             </div>
           </div>
           <div style={{ padding: '0 22px 20px', display: 'flex', gap: 10, justifyContent: 'flex-end' }}>

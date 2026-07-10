@@ -21,6 +21,45 @@ function ghHeaders() {
   };
 }
 
+// Retry transient GitHub upstream errors (502/503/504) and secondary rate
+// limits (429) with backoff. Used for the read-only compare below.
+async function ghFetch(url, options = {}, { retries = 3 } = {}) {
+  let res;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    res = await fetch(url, options);
+    const transient = res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504;
+    if (!transient || attempt === retries) return res;
+    const retryAfter = Number(res.headers.get('retry-after'));
+    const delay = Number.isFinite(retryAfter) && retryAfter > 0
+      ? Math.min(retryAfter * 1000, 4000)
+      : Math.min(400 * 2 ** attempt, 4000);
+    await new Promise((r) => setTimeout(r, delay));
+  }
+  return res;
+}
+
+// Turn the raw commits between main...staging into a human-readable list of what
+// will actually go live. Filters out build-system noise (auto-rebuild commits,
+// merge/publish commits) and parses AI edits ("AI edit (page): summary") into a
+// page + plain-English summary. De-duplicates repeated summaries.
+function buildChanges(commits) {
+  const IGNORE = /^(chore:\s*auto-rebuild|Merge (branch|pull request|remote)|Publish:\s*merge)/i;
+  const seen = new Set();
+  const changes = [];
+  for (const c of Array.isArray(commits) ? commits : []) {
+    const firstLine = (c?.commit?.message || '').split('\n')[0].trim();
+    if (!firstLine || IGNORE.test(firstLine)) continue;
+    const m = firstLine.match(/^AI edit \(([^)]+)\):\s*(.+)$/i);
+    const entry = m ? { page: m[1], text: m[2].trim() } : { page: null, text: firstLine };
+    const key = `${entry.page || ''}|${entry.text}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    changes.push(entry);
+  }
+  changes.reverse(); // most recent first
+  return changes;
+}
+
 function cfg() {
   return {
     repo: process.env.GITHUB_REPO,
@@ -49,18 +88,27 @@ export default async function handler(req, res) {
     if (req.method === 'GET') {
       // Compare main...staging to count commits ahead.
       const url = `${GH_API}/repos/${repo}/compare/${encodeURIComponent(main)}...${encodeURIComponent(staging)}`;
-      const r = await fetch(url, { headers: ghHeaders() });
+      const r = await ghFetch(url, { headers: ghHeaders() });
       if (!r.ok) {
-        const text = await r.text();
-        return res.status(r.status).json({ error: `GitHub compare failed: ${text}` });
+        const text = await r.text().catch(() => '');
+        const status = r.status;
+        const msg = status >= 500 || status === 429
+          ? 'GitHub is temporarily unavailable. Please try again in a moment.'
+          : `GitHub compare failed (${status}).`;
+        console.error('[publish] compare failed:', status, text.slice(0, 200));
+        return res.status(status === 429 ? 503 : status).json({ error: msg });
       }
       const data = await r.json();
-      const last = data.commits && data.commits.length ? data.commits[data.commits.length - 1] : null;
+      const commits = data.commits && data.commits.length ? data.commits : [];
+      const last = commits.length ? commits[commits.length - 1] : null;
+      const changes = buildChanges(commits);
       return res.status(200).json({
         ahead_by: data.ahead_by || 0,
         behind_by: data.behind_by || 0,
         last_commit_date: last?.commit?.committer?.date || null,
         last_commit_message: last?.commit?.message || null,
+        changes,
+        change_count: changes.length,
       });
     }
 
