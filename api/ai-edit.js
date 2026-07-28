@@ -49,6 +49,27 @@ async function ghFetch(url, options = {}, { retries = 3 } = {}) {
   return res;
 }
 
+// Anthropic returns 429 (rate limit) and 529 (overloaded) under bursty use —
+// e.g. two staff making edits back-to-back during a training session. Those are
+// transient: retry with backoff (honoring retry-after) instead of failing the
+// user's edit on the first attempt. Nothing is committed until after this call,
+// so retrying the request is safe.
+async function anthropicFetch(url, options = {}, { retries = 2 } = {}) {
+  let res;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    res = await fetch(url, options);
+    const transient = res.status === 429 || res.status === 529 ||
+      res.status === 500 || res.status === 502 || res.status === 503 || res.status === 504;
+    if (!transient || attempt === retries) return res;
+    const retryAfter = Number(res.headers.get('retry-after'));
+    const delay = Number.isFinite(retryAfter) && retryAfter > 0
+      ? Math.min(retryAfter * 1000, 8000)
+      : Math.min(1500 * 2 ** attempt, 8000);
+    await new Promise((r) => setTimeout(r, delay));
+  }
+  return res;
+}
+
 function cfg() {
   return {
     repo: process.env.GITHUB_REPO,
@@ -239,7 +260,7 @@ export default async function handler(req, res) {
       `outside the requested page's body content.\n\n` +
       `----- BEGIN _build.py -----\n${originalHtml}\n----- END _build.py -----`;
 
-    const aiRes = await fetch(ANTHROPIC_API, {
+    const aiRes = await anthropicFetch(ANTHROPIC_API, {
       method: 'POST',
       headers: {
         'x-api-key': process.env.ANTHROPIC_API_KEY,
@@ -258,8 +279,12 @@ export default async function handler(req, res) {
 
     if (!aiRes.ok) {
       const text = await aiRes.text();
-      console.error('[ai-edit] Anthropic error:', aiRes.status, text);
-      return res.status(502).json({ error: `The AI service returned an error (${aiRes.status}). Please try again.` });
+      console.error('[ai-edit] Anthropic error (after retries):', aiRes.status, text.slice(0, 300));
+      const busy = aiRes.status === 429 || aiRes.status === 529;
+      const msg = busy
+        ? 'The AI editor is busy right now, so nothing was saved. Wait a few seconds and send your change again.'
+        : `The AI service returned an error (${aiRes.status}), so nothing was saved. Please try again.`;
+      return res.status(502).json({ ok: false, error: msg });
     }
 
     const aiData = await aiRes.json();
