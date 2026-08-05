@@ -26,6 +26,7 @@ export default function Dashboard() {
   const [pubStatus, setPubStatus] = useState({ loading: true, error: null, data: null });
   const [showPublish, setShowPublish] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  const [preflight, setPreflight] = useState({ loading: false, error: null, data: null });
 
   const loadPublishStatus = useCallback(async () => {
     setPubStatus((s) => ({ ...s, loading: true, error: null }));
@@ -43,6 +44,25 @@ export default function Dashboard() {
   useEffect(() => {
     loadPublishStatus();
   }, [loadPublishStatus]);
+
+  // Pre-publish checks. Advisory only: if this fails to run, publishing is
+  // still allowed — we never want a broken check to lock staff out of shipping.
+  const runPreflight = useCallback(async () => {
+    setPreflight({ loading: true, error: null, data: null });
+    try {
+      const headers = await authHeaders();
+      const res = await fetch('/api/preflight', { headers });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Status ${res.status}`);
+      setPreflight({ loading: false, error: null, data });
+    } catch (err) {
+      setPreflight({ loading: false, error: err.message, data: null });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (showPublish) runPreflight();
+  }, [showPublish, runPreflight]);
 
   async function confirmPublish() {
     setPublishing(true);
@@ -67,6 +87,9 @@ export default function Dashboard() {
   // parsing yielded nothing (e.g. only build/merge commits are pending).
   const displayCount = pubStatus.data?.change_count || ahead;
   const hasPending = ahead > 0;
+  const errorCount = preflight.data?.summary?.error ?? 0;
+  const warningCount = preflight.data?.summary?.warning ?? 0;
+  const blocking = errorCount > 0;
 
   return (
     <div style={{ maxWidth: 1180, margin: '0 auto' }}>
@@ -211,14 +234,82 @@ export default function Dashboard() {
                 Latest: “{pubStatus.data.last_commit_message}”
               </p>
             ) : null}
+            {/* Pre-publish checks */}
+            <div style={{ marginBottom: 14 }}>
+              {preflight.loading ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '10px 0' }}>
+                  <span className="spinner" />
+                  <span className="note">Checking your changes…</span>
+                </div>
+              ) : preflight.error ? (
+                <div className="ms" style={{ background: 'var(--field)', borderRadius: 9, padding: '10px 12px', fontWeight: 600, fontSize: 12, color: 'var(--muted)' }}>
+                  Couldn't run the pre-publish checks ({preflight.error}). You can still publish.
+                </div>
+              ) : preflight.data ? (
+                errorCount === 0 && warningCount === 0 ? (
+                  <div className="ms" style={{ background: 'var(--green-t)', borderRadius: 9, padding: '10px 12px', fontWeight: 700, fontSize: 12, color: 'var(--green-d)' }}>
+                    ✓ Checks passed{preflight.data.checked ? ` · ${preflight.data.checked} page${preflight.data.checked === 1 ? '' : 's'} reviewed` : ''}
+                  </div>
+                ) : (
+                  <div>
+                    <div
+                      className="ms"
+                      style={{
+                        borderRadius: '9px 9px 0 0', padding: '9px 12px', fontWeight: 800, fontSize: 11,
+                        letterSpacing: '.04em', textTransform: 'uppercase',
+                        background: errorCount > 0 ? '#f7ded9' : 'var(--amber-t)',
+                        color: errorCount > 0 ? 'var(--red-ink)' : 'var(--amber-d)',
+                      }}
+                    >
+                      {errorCount > 0
+                        ? `${errorCount} problem${errorCount === 1 ? '' : 's'} found`
+                        : `${warningCount} thing${warningCount === 1 ? '' : 's'} worth a look`}
+                      {errorCount > 0 && warningCount > 0 ? ` · ${warningCount} warning${warningCount === 1 ? '' : 's'}` : ''}
+                    </div>
+                    <ul
+                      className="scroll"
+                      style={{
+                        listStyle: 'none', margin: 0, padding: '4px 12px 8px', maxHeight: 190, overflowY: 'auto',
+                        border: '1px solid var(--line)', borderTop: 'none', borderRadius: '0 0 9px 9px',
+                      }}
+                    >
+                      {(preflight.data.findings || []).map((f, i) => (
+                        <li key={i} style={{ display: 'flex', gap: 8, alignItems: 'baseline', padding: '7px 0' }}>
+                          <span style={{ flex: 'none', fontWeight: 800, fontSize: 12, color: f.severity === 'error' ? 'var(--red-ink)' : 'var(--amber-d)' }}>
+                            {f.severity === 'error' ? '!' : '·'}
+                          </span>
+                          <span style={{ fontSize: 13, lineHeight: 1.45, color: 'var(--body)' }}>
+                            {f.message}
+                            <span className="ms" style={{ marginLeft: 7, fontSize: 10, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted)' }}>
+                              {f.file}
+                            </span>
+                          </span>
+                        </li>
+                      ))}
+                      {preflight.data.truncated > 0 && (
+                        <li style={{ padding: '7px 0', fontSize: 12.5, color: 'var(--muted)' }}>
+                          + {preflight.data.truncated} more…
+                        </li>
+                      )}
+                    </ul>
+                  </div>
+                )
+              ) : null}
+            </div>
+
             <div style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--muted)', background: 'var(--field)', borderRadius: 9, padding: '11px 13px' }}>
               This merges the changes above into <strong style={{ color: 'var(--ink)' }}>projecthood.org</strong>. Nothing else changes.
             </div>
           </div>
           <div style={{ padding: '0 22px 20px', display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
             <button className="btn btn-ghost" onClick={() => setShowPublish(false)} disabled={publishing}>Cancel</button>
-            <button className="btn btn-primary cta-btn" onClick={confirmPublish} disabled={publishing}>
-              {publishing ? 'Publishing…' : 'Publish now'}
+            <button
+              className="btn btn-primary cta-btn"
+              onClick={confirmPublish}
+              disabled={publishing || preflight.loading}
+              title={blocking ? 'The checks found problems — publish only if you know these are fine.' : undefined}
+            >
+              {publishing ? 'Publishing…' : blocking ? 'Publish anyway' : 'Publish now'}
             </button>
           </div>
         </Modal>
