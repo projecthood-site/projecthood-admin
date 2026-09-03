@@ -80,6 +80,41 @@ export default async function handler(req, res) {
     }
 
     out.github.status = 'ok';
+
+    // Authenticating is not the same as being allowed to write. A token scoped
+    // read-only would sail through /user and still fail every save and publish,
+    // which is exactly the kind of silent half-working state this endpoint
+    // exists to rule out. Ask the repo whether this token can actually push.
+    if (repo) {
+      try {
+        const repoRes = await fetch(`${GH_API}/repos/${repo}`, {
+          headers: {
+            Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'User-Agent': 'ph-website-admin',
+          },
+        });
+        if (repoRes.ok) {
+          const repoData = await repoRes.json();
+          const canPush = Boolean(repoData?.permissions?.push);
+          out.github.canWrite = canPush;
+          if (!canPush) {
+            out.publishing = 'read_only';
+            out.ok = false;
+            out.detail =
+              'The token is valid but has read-only access to the repository. Preview works; ' +
+              'saving edits and publishing do not. Re-issue it with Contents: Read and write.';
+            return res.status(200).json(out);
+          }
+        } else {
+          out.github.canWrite = null;
+        }
+      } catch {
+        out.github.canWrite = null;
+      }
+    }
+
     out.publishing = 'ok';
     out.ok = true;
     const d = out.github.daysRemaining;
