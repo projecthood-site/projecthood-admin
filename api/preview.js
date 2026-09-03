@@ -8,7 +8,8 @@
 //
 // The site repo is PUBLIC, so staged HTML is not sensitive.
 //
-// Server-only env: GITHUB_TOKEN, GITHUB_REPO, GITHUB_STAGING_BRANCH (default "staging").
+// Server-only env: GITHUB_REPO, GITHUB_STAGING_BRANCH (default "staging"), and
+// optionally GITHUB_TOKEN. The token is NOT required here — see ghHeaders().
 const GH_API = 'https://api.github.com';
 
 // Only these exact repo-relative paths may be previewed. Prevents arbitrary
@@ -36,13 +37,21 @@ const ALLOWED_PAGES = new Set([
   'contact.html',
 ]);
 
-function ghHeaders() {
-  return {
-    Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+// The site repo is PUBLIC, so preview reads work with or without a credential.
+// We send the token when we have one (it raises the API rate limit), but the
+// preview must never *depend* on it: GitHub rejects a bad credential with 401
+// before it ever considers the public-read path, so an expired token would
+// otherwise take the whole preview down. See the 401 fallback in the handler.
+function ghHeaders({ authenticated = true } = {}) {
+  const headers = {
     Accept: 'application/vnd.github+json',
     'X-GitHub-Api-Version': '2022-11-28',
     'User-Agent': 'ph-website-admin',
   };
+  if (authenticated && process.env.GITHUB_TOKEN) {
+    headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  }
+  return headers;
 }
 
 // The GitHub Contents API intermittently returns transient upstream errors
@@ -94,6 +103,37 @@ function sendHtml(res, status, html, { noStore = true } = {}) {
   res.end(html);
 }
 
+// Read one staged page, preferring the freshest source that actually works.
+// Returns { ok, html, status?, body?, viaFallback? }.
+async function fetchStagedHtml(repo, staging, page) {
+  if (process.env.GITHUB_TOKEN) {
+    const apiUrl =
+      `${GH_API}/repos/${repo}/contents/${encodeURIComponent(page)}?ref=${encodeURIComponent(staging)}`;
+    const apiRes = await ghFetch(apiUrl, { headers: ghHeaders() });
+    if (apiRes.ok) {
+      const data = await apiRes.json();
+      return { ok: true, html: Buffer.from(data.content || '', 'base64').toString('utf8') };
+    }
+    // A missing file is a real answer, not a reason to fall back.
+    if (apiRes.status === 404) return { ok: false, status: 404 };
+    if (apiRes.status === 401 || apiRes.status === 403) {
+      console.warn(
+        '[preview] GitHub rejected GITHUB_TOKEN (%s). Serving preview from raw.githubusercontent instead. ' +
+          'Rotate the token — publishing stays broken until you do.',
+        apiRes.status
+      );
+    } else {
+      console.warn('[preview] Contents API failed (%s); trying raw.githubusercontent.', apiRes.status);
+    }
+  }
+
+  const rawUrl = `https://raw.githubusercontent.com/${repo}/${encodeURIComponent(staging)}/${page}`;
+  const rawRes = await ghFetch(rawUrl, { headers: { 'User-Agent': 'ph-website-admin' } });
+  if (rawRes.ok) return { ok: true, html: await rawRes.text(), viaFallback: true };
+  if (rawRes.status === 404) return { ok: false, status: 404 };
+  return { ok: false, status: rawRes.status, body: await rawRes.text().catch(() => '') };
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET');
@@ -102,11 +142,11 @@ export default async function handler(req, res) {
 
   const { repo, staging } = cfg();
 
-  if (!process.env.GITHUB_TOKEN || !repo) {
+  if (!repo) {
     return sendHtml(
       res,
       500,
-      noticeHtml('Preview unavailable', 'The preview service is not configured (missing GitHub credentials).')
+      noticeHtml('Preview unavailable', 'The preview service is not configured (missing GITHUB_REPO).')
     );
   }
 
@@ -117,32 +157,44 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 2) Fetch the file FRESH from the staging branch via the Contents API.
-    const getUrl = `${GH_API}/repos/${repo}/contents/${encodeURIComponent(page)}?ref=${encodeURIComponent(staging)}`;
-    const getRes = await ghFetch(getUrl, { headers: ghHeaders() });
+    // 2) Fetch the staged file. Two paths, in order of freshness:
+    //
+    //    a) Contents API with the token — always the newest commit, but a dead
+    //       credential makes GitHub answer 401 *before* it considers the public
+    //       -read path, so this alone is a single point of failure.
+    //    b) raw.githubusercontent, anonymous — the repo is public, so no
+    //       credential is needed, and unlike the API it carries no 60-req/hour
+    //       anonymous cap (which Vercel's shared egress IPs would blow through
+    //       immediately). It can trail the newest commit by a minute or two.
+    //
+    // Net effect: an expired token costs a little freshness, not the preview.
+    const result = await fetchStagedHtml(repo, staging, page);
 
-    if (getRes.status === 404) {
+    if (result.status === 404) {
       return sendHtml(
         res,
         404,
         noticeHtml('Not staged yet', `"${page}" was not found on the ${staging} branch.`)
       );
     }
-    if (!getRes.ok) {
-      const text = await getRes.text().catch(() => '');
-      console.error('[preview] GitHub read failed:', getRes.status, text.slice(0, 200));
+    if (!result.ok) {
+      console.error('[preview] read failed:', result.status, (result.body || '').slice(0, 200));
+      // Both paths failed — a real outage, or the repo stopped being public.
+      // Refresh will not cure either, so don't tell staff to keep clicking it.
+      const authFailure = result.status === 401 || result.status === 403;
       return sendHtml(
         res,
         502,
         noticeHtml(
-          'Preview temporarily unavailable',
-          `GitHub is having a hiccup (error ${getRes.status}). This is temporary — click Refresh in a moment. Your saved changes are safe.`
+          authFailure ? 'Preview needs attention' : 'Preview temporarily unavailable',
+          authFailure
+            ? `The site connection needs to be re-authorized (error ${result.status}). Refreshing won't clear this one — please let Brian know. Your saved changes are safe.`
+            : `GitHub is having a hiccup (error ${result.status}). This is temporary — click Refresh in a moment. Your saved changes are safe.`
         )
       );
     }
 
-    const fileData = await getRes.json();
-    let html = Buffer.from(fileData.content || '', 'base64').toString('utf8');
+    let html = result.html;
 
     // 3) Inject a <base> so RELATIVE asset URLs resolve from staging via jsDelivr,
     //    plus a tiny style so the page renders nicely inside an iframe.
