@@ -4,6 +4,12 @@ import { supabase } from '../lib/supabase';
 // Curated list of editable pages: display name -> repo-relative path.
 // IMPORTANT: this set MUST stay in sync with the ALLOWED_PAGES allowlist in
 // api/preview.js (preview.js validates the page against that list for security).
+//
+// Deliberately NOT editable here:
+//   events.html  — regenerated from the Eventbrite API and the public Google
+//                  Calendar on every build, so any edit would be silently
+//                  overwritten. Change events at the source instead.
+//   privacy.html, 404.html — legal/system pages, changed by hand.
 const PAGES = [
   { name: 'Home', path: 'index.html' },
   { name: 'Programs', path: 'programs.html' },
@@ -20,6 +26,15 @@ const PAGES = [
   { name: 'Violence Prevention', path: 'violence-prevention.html' },
   { name: 'Youth Programming', path: 'youth-programming.html' },
   { name: 'Health & Wellness', path: 'health-wellness.html' },
+  { name: 'Construction Cohort', path: 'construction-cohort.html' },
+  { name: 'Recovery in the H.O.O.D.', path: 'recovery.html' },
+  { name: 'Success Stories', path: 'stories.html' },
+  { name: 'Walk With Us', path: 'campaigns.html' },
+  { name: 'Annual Report', path: 'annual-report.html' },
+  { name: 'The First Look', path: 'first-look.html' },
+  { name: 'Pastor Brooks', path: 'pastor-brooks.html' },
+  { name: "Pastor's Letter", path: 'letter.html' },
+  { name: 'Volunteer', path: 'volunteer.html' },
   { name: 'News', path: 'news.html' },
   { name: 'Partner', path: 'partner.html' },
   { name: 'Contact', path: 'contact.html' },
