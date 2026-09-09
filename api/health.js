@@ -81,32 +81,42 @@ export default async function handler(req, res) {
 
     out.github.status = 'ok';
 
-    // Authenticating is not the same as being allowed to write. A token scoped
-    // read-only would sail through /user and still fail every save and publish,
-    // which is exactly the kind of silent half-working state this endpoint
-    // exists to rule out. Ask the repo whether this token can actually push.
+    // Authenticating is not the same as being allowed to write, and the repo
+    // object's permissions.push is NOT a reliable proxy: for a fine-grained
+    // token it can report the signing user's own access to the repo rather
+    // than the permissions actually granted to the token. It said "true" while
+    // every save failed with 403.
+    //
+    // So probe with a real write that changes nothing observable: create a
+    // git blob. Writing a blob requires Contents: write, but it touches no
+    // file, no branch and no history — an unreferenced blob is garbage
+    // collected. If this succeeds, saving and publishing will too.
     if (repo) {
       try {
-        const repoRes = await fetch(`${GH_API}/repos/${repo}`, {
+        const probe = await fetch(`${GH_API}/repos/${repo}/git/blobs`, {
+          method: 'POST',
           headers: {
             Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
             Accept: 'application/vnd.github+json',
             'X-GitHub-Api-Version': '2022-11-28',
             'User-Agent': 'ph-website-admin',
+            'Content-Type': 'application/json',
           },
+          body: JSON.stringify({ content: 'ph-admin write probe', encoding: 'utf-8' }),
         });
-        if (repoRes.ok) {
-          const repoData = await repoRes.json();
-          const canPush = Boolean(repoData?.permissions?.push);
-          out.github.canWrite = canPush;
-          if (!canPush) {
-            out.publishing = 'read_only';
-            out.ok = false;
-            out.detail =
-              'The token is valid but has read-only access to the repository. Preview works; ' +
-              'saving edits and publishing do not. Re-issue it with Contents: Read and write.';
-            return res.status(200).json(out);
-          }
+        if (probe.ok) {
+          out.github.canWrite = true;
+        } else if (probe.status === 403 || probe.status === 404) {
+          out.github.canWrite = false;
+          out.publishing = 'read_only';
+          out.ok = false;
+          out.detail =
+            'The token authenticates but cannot write to the repository — saving edits and ' +
+            'publishing fail with 403. Preview still works. Fix: GitHub → Settings → Developer ' +
+            'settings → Personal access tokens → Fine-grained tokens → open this token → ' +
+            'Repository permissions → set Contents to "Read and write" → Update. The token ' +
+            'value does not change, so nothing in Vercel needs touching.';
+          return res.status(200).json(out);
         } else {
           out.github.canWrite = null;
         }
