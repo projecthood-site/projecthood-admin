@@ -1,10 +1,11 @@
 // Vercel serverless function — "Edit with Claude" AI page editor.
 //   POST /api/ai-edit  { page, instruction, history? }
 //
-// Flow: verify the caller's Supabase session -> read the target page from the
-// STAGING branch on GitHub -> ask Claude for the minimal body edit as a
-// forced tool call -> apply the find/replace edits -> commit to STAGING only
-// -> best-effort activity_log entry. NEVER writes to main.
+// Flow: verify the caller's Supabase session -> read _build.py from the STAGING
+// branch on GitHub -> cut out JUST the requested page's body block -> ask Claude
+// for the minimal edit as a forced tool call -> apply the find/replace edits
+// inside that block -> splice it back into the full file -> commit to STAGING
+// only -> best-effort activity_log entry. NEVER writes to main.
 //
 // Server-only env (never exposed to the browser):
 //   ANTHROPIC_API_KEY, ANTHROPIC_MODEL (default "claude-sonnet-5"),
@@ -70,6 +71,64 @@ async function anthropicFetch(url, options = {}, { retries = 2 } = {}) {
   return res;
 }
 
+// Turn an Anthropic API failure into something a non-technical person can act
+// on. A bare "The AI service returned an error (400)" told staff nothing and
+// told whoever they escalated to even less — the two most common 400s here
+// (billing exhausted, request too large) need completely different responses.
+function explainAnthropicError(status, rawText) {
+  let apiMessage = '';
+  let apiType = '';
+  try {
+    const parsed = JSON.parse(rawText);
+    apiMessage = parsed?.error?.message || '';
+    apiType = parsed?.error?.type || '';
+  } catch {
+    apiMessage = (rawText || '').slice(0, 300);
+  }
+  const lower = apiMessage.toLowerCase();
+
+  if (status === 429 || status === 529) {
+    return {
+      message: 'The AI editor is busy right now, so nothing was saved. Wait a few seconds and send your change again.',
+      apiType,
+      apiMessage,
+    };
+  }
+  if (lower.includes('credit balance') || lower.includes('billing') || status === 402) {
+    return {
+      message: "The AI editor's Anthropic account is out of credit, so nothing was saved. This is a billing setting, not a problem with your change — ask Brian to add credit at console.anthropic.com and then send it again.",
+      apiType,
+      apiMessage,
+    };
+  }
+  if (lower.includes('prompt is too long') || lower.includes('too many tokens') || lower.includes('exceed')) {
+    return {
+      message: "That page is too large for the AI editor to read in one go, so nothing was saved. Please tell Brian which page you were editing — this one needs a developer fix.",
+      apiType,
+      apiMessage,
+    };
+  }
+  if (status === 401 || status === 403) {
+    return {
+      message: "The AI editor's connection to Anthropic isn't authorized, so nothing was saved. Ask Brian to check the API key in the admin settings.",
+      apiType,
+      apiMessage,
+    };
+  }
+  if (status === 404 && lower.includes('model')) {
+    return {
+      message: "The AI editor is pointed at a model that isn't available on this account, so nothing was saved. Ask Brian to check the model setting.",
+      apiType,
+      apiMessage,
+    };
+  }
+  return {
+    message: `The AI service returned an error (${status}), so nothing was saved.${apiMessage ? ` It said: "${apiMessage.slice(0, 200)}"` : ''} Please try again, and tell Brian if it keeps happening.`,
+    apiType,
+    apiMessage,
+  };
+}
+
 function cfg() {
   return {
     repo: process.env.GITHUB_REPO,
@@ -96,6 +155,49 @@ async function readBody(req) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Cut one page's body out of _build.py
+// ---------------------------------------------------------------------------
+// _build.py holds every page in one file (~270KB and growing). Sending the whole
+// thing on every edit was slow, expensive, and put the request near the model's
+// limits — and it made the model hunt through thirty pages to find three words.
+//
+// The file has a registry at the bottom mapping each output filename to the
+// variable holding that page's body:
+//     ("about.html", "About", "...", "a_about", about_body),
+// and each body is a triple-quoted block starting at column 0:
+//     about_body = f"""...
+//     """
+// So: find the registry line, read the variable name off the end of it, then
+// slice from that variable's definition to its closing delimiter. Edits are
+// matched and applied inside that slice only, then spliced back — which also
+// means an edit physically cannot touch another page, the nav, or the footer.
+//
+// Returns null if anything about the file's shape is unexpected; the caller
+// then falls back to sending the whole file, as before.
+function extractPageSection(source, page) {
+  const file = String(page).trim().replace(/^\/+/, '');
+  const withExt = file.endsWith('.html') ? file : `${file}.html`;
+  const escaped = withExt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  const entry = new RegExp(`^\\s*\\(\\s*"${escaped}"[^\\n]*?([A-Za-z_][A-Za-z0-9_]*)\\s*\\)\\s*,\\s*$`, 'm');
+  const m = source.match(entry);
+  if (!m) return null;
+  const varName = m[1];
+
+  const defRe = new RegExp(`^${varName}\\s*=\\s*f?("""|''')`, 'm');
+  const d = source.match(defRe);
+  if (!d) return null;
+  const delim = d[1];
+  const start = d.index;
+  const bodyStart = d.index + d[0].length;
+  const closeIdx = source.indexOf(`\n${delim}`, bodyStart);
+  if (closeIdx === -1) return null;
+  const end = closeIdx + 1 + delim.length;
+
+  return { varName, file: withExt, start, end, text: source.slice(start, end) };
+}
+
 // Guardrails embedded from the site's CLAUDE.md operating rules.
 const SYSTEM_PROMPT = `You are the "Edit with Claude" assistant for the Project H.O.O.D. website admin.
 Non-technical staff describe changes in plain English; you edit the website's source.
@@ -104,25 +206,26 @@ CRITICAL — HOW THIS SITE IS BUILT:
 The projecthood.org pages are GENERATED by a Python script, _build.py, which contains each page's
 full HTML body inside template strings. The .html files are build OUTPUTS and are overwritten on every
 build. Therefore you must make edits inside _build.py (the source), NOT in any .html file — otherwise
-the change is wiped on the next rebuild. You will be given the full _build.py and told which page to edit.
+the change is wiped on the next rebuild. You will be given the requested page's body block from
+_build.py, exactly as it appears in the file.
 
 HARD RULES (never break these):
-- Edit ONLY the requested page's BODY content (its headlines, paragraphs, sections, images, links) inside
-  its template string in _build.py. Find that page's section first.
-- Make the MINIMAL change. Do not rewrite or reformat unrelated markup or other pages.
-- NEVER change Python code, function definitions, the render()/HEAD/nav/footer template strings, f-string
-  placeholders (e.g. {a_programs}, {active}), imports, or logic. Only change human-visible HTML text/markup
-  within the target page's body.
+- Edit ONLY the BODY content shown to you (its headlines, paragraphs, sections, images, links).
+- Make the MINIMAL change. Do not rewrite or reformat unrelated markup.
+- NEVER change Python code, the variable assignment line, f-string placeholders (e.g. {a_programs},
+  {stories_section_for('...')}), or the closing triple-quote. Only change human-visible HTML text/markup.
 - Use existing brand CSS classes and variables (var(--green), var(--red), var(--yellow), .bg-green,
   .bg-red, .bg-offwhite, .video-frame). NEVER introduce raw hex color values.
 - Keep section backgrounds alternating; keep valid, balanced HTML; keep the file valid Python (don't break
   quotes/escaping inside the strings).
 - All work lands on "staging" and stays there until a human publishes — nothing you do goes live.
-- Do NOT swap external destinations (Donate->NetworkForGood, Walk With Us->Tiltify, Volunteer/Contact->Google Forms).
+- Do NOT swap external destinations (Donate->NetworkForGood, Volunteer/Contact->Google Forms).
+- The site's shared navigation, footer, and <head> are NOT shown to you and must not be edited here. If the
+  requested change is to one of those, or to a different page, return an empty edits array and say so.
 
 You MUST respond by calling the "stage_edits" tool. Every edit's "find" must be an EXACT, UNIQUE substring
-copied verbatim from _build.py (include enough surrounding context to be unique). If you cannot safely make
-the change, return an empty edits array and explain why in "reply".`;
+copied verbatim from the block you were given (include enough surrounding context to be unique). If you
+cannot safely make the change, return an empty edits array and explain why in "reply".`;
 
 const STAGE_EDITS_TOOL = {
   name: 'stage_edits',
@@ -146,7 +249,7 @@ const STAGE_EDITS_TOOL = {
           properties: {
             find: {
               type: 'string',
-              description: 'An exact substring currently in the file. Must be unique in the file.',
+              description: 'An exact substring currently in the block you were given. Must be unique within it.',
             },
             replace: {
               type: 'string',
@@ -238,7 +341,17 @@ export default async function handler(req, res) {
     }
     const fileData = await getRes.json();
     const sha = fileData.sha;
-    const originalHtml = Buffer.from(fileData.content || '', 'base64').toString('utf8');
+    const originalSource = Buffer.from(fileData.content || '', 'base64').toString('utf8');
+
+    // 2b) Narrow to the requested page's body block. Falls back to the whole
+    //     file if the registry/body shape ever changes.
+    const section = extractPageSection(originalSource, page);
+    const scoped = Boolean(section);
+    const excerpt = scoped ? section.text : originalSource;
+    console.log(
+      `[ai-edit] page=${page} scoped=${scoped}${scoped ? ` var=${section.varName}` : ''} ` +
+      `chars=${excerpt.length} of ${originalSource.length}`
+    );
 
     // 3) Ask Claude for the edits (forced tool call).
     const historyText = history.length
@@ -249,16 +362,24 @@ export default async function handler(req, res) {
           .join('\n')
       : '';
 
-    const userMessage =
-      `The user is editing the "${page}" page of projecthood.org.\n\n` +
-      `The user's request: ${instruction}${historyText}\n\n` +
-      `Below is the FULL SOURCE of _build.py — the Python script that generates every page's HTML. ` +
-      `Locate the section that builds the "${page}" page and make the MINIMAL change to the HTML text ` +
-      `inside its template string to satisfy the request. Each "find" must be an exact, UNIQUE substring ` +
-      `of this file (include enough surrounding context to guarantee uniqueness). Do NOT change Python ` +
-      `code, f-string placeholders like {a_programs}, the render()/nav/footer/head templates, or anything ` +
-      `outside the requested page's body content.\n\n` +
-      `----- BEGIN _build.py -----\n${originalHtml}\n----- END _build.py -----`;
+    const userMessage = scoped
+      ? `The user is editing the "${page}" page of projecthood.org.\n\n` +
+        `The user's request: ${instruction}${historyText}\n\n` +
+        `Below is that page's body block exactly as it appears in _build.py — the variable ` +
+        `"${section.varName}" and its triple-quoted HTML. Make the MINIMAL change to the HTML inside it ` +
+        `to satisfy the request. Each "find" must be an exact, UNIQUE substring of this block (include ` +
+        `enough surrounding context to guarantee uniqueness). Do NOT change the assignment line, the ` +
+        `closing triple-quote, or f-string placeholders like {a_programs}.\n\n` +
+        `----- BEGIN ${section.varName} (from _build.py) -----\n${excerpt}\n----- END ${section.varName} -----`
+      : `The user is editing the "${page}" page of projecthood.org.\n\n` +
+        `The user's request: ${instruction}${historyText}\n\n` +
+        `Below is the FULL SOURCE of _build.py — the Python script that generates every page's HTML. ` +
+        `Locate the section that builds the "${page}" page and make the MINIMAL change to the HTML text ` +
+        `inside its template string to satisfy the request. Each "find" must be an exact, UNIQUE substring ` +
+        `of this file (include enough surrounding context to guarantee uniqueness). Do NOT change Python ` +
+        `code, f-string placeholders like {a_programs}, the render()/nav/footer/head templates, or anything ` +
+        `outside the requested page's body content.\n\n` +
+        `----- BEGIN _build.py -----\n${excerpt}\n----- END _build.py -----`;
 
     const aiRes = await anthropicFetch(ANTHROPIC_API, {
       method: 'POST',
@@ -269,7 +390,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model,
-        max_tokens: 4000,
+        max_tokens: 8000,
         system: SYSTEM_PROMPT,
         tools: [STAGE_EDITS_TOOL],
         tool_choice: { type: 'tool', name: 'stage_edits' },
@@ -278,13 +399,18 @@ export default async function handler(req, res) {
     });
 
     if (!aiRes.ok) {
-      const text = await aiRes.text();
-      console.error('[ai-edit] Anthropic error (after retries):', aiRes.status, text.slice(0, 300));
-      const busy = aiRes.status === 429 || aiRes.status === 529;
-      const msg = busy
-        ? 'The AI editor is busy right now, so nothing was saved. Wait a few seconds and send your change again.'
-        : `The AI service returned an error (${aiRes.status}), so nothing was saved. Please try again.`;
-      return res.status(502).json({ ok: false, error: msg });
+      const text = await aiRes.text().catch(() => '');
+      const explained = explainAnthropicError(aiRes.status, text);
+      console.error(
+        '[ai-edit] Anthropic error (after retries):',
+        aiRes.status, explained.apiType, explained.apiMessage.slice(0, 300)
+      );
+      return res.status(502).json({
+        ok: false,
+        error: explained.message,
+        upstream_status: aiRes.status,
+        upstream_type: explained.apiType || null,
+      });
     }
 
     const aiData = await aiRes.json();
@@ -300,8 +426,14 @@ export default async function handler(req, res) {
     //      people editing at once contend on the same file. If GitHub rejects our
     //      commit because the file changed underneath us (409/422), we re-read the
     //      latest _build.py, re-apply the SAME edits, and try again.
+    //
+    //      Matching happens inside the page's own block, so "not unique" now means
+    //      "twice on THIS page" rather than "also on some other page", and a bad
+    //      match can't reach the nav, the footer, or a page nobody asked about.
     const applyEdits = (source) => {
-      let out = source;
+      const target = extractPageSection(source, page);
+      const scope = target ? target.text : source;
+      let out = scope;
       const applied = [];
       const skipped = [];
       for (const edit of Array.isArray(edits) ? edits : []) {
@@ -314,11 +446,14 @@ export default async function handler(req, res) {
         out = out.replace(find, replace);
         applied.push({ find, replace });
       }
-      return { out, applied, skipped };
+      const full = target
+        ? source.slice(0, target.start) + out + source.slice(target.end)
+        : out;
+      return { out: full, applied, skipped };
     };
 
     let currentSha = sha;
-    let currentSource = originalHtml;
+    let currentSource = originalSource;
     let commitSha = null;
     let applied = [];
     let skipped = [];
@@ -340,7 +475,7 @@ export default async function handler(req, res) {
           const detail = reasons.has('not-found')
             ? " I couldn't find the exact text to change on that page."
             : reasons.has('not-unique')
-              ? " The text I matched appears in more than one place, so I didn't change it to avoid editing the wrong spot."
+              ? " The text I matched appears in more than one place on that page, so I didn't change it to avoid editing the wrong spot."
               : '';
           honest = `I wasn't able to make that change, so nothing was saved.${detail} Try quoting the exact words you want changed, and I'll try again.`;
         } else {
