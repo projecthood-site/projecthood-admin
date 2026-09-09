@@ -68,6 +68,78 @@ function cfg() {
   };
 }
 
+// Publish staging over main when the two branches have diverged.
+//
+// Every page on this site is GENERATED from _build.py, and the rebuild workflow
+// runs and commits on BOTH branches — on each push and again on a daily
+// schedule. So the same generated files get regenerated independently on main
+// and on staging, and git sees two different edits to the same lines. It calls
+// that a conflict. It is not one: no two people edited anything, and staging is
+// by definition the reviewed content that "Publish" is meant to make live.
+//
+// This creates a real merge commit on main — two parents, so no history is
+// orphaned and the branches are genuinely joined — but with staging's tree as
+// the content. Main's next scheduled rebuild refreshes the calendar from the
+// live feeds within the day.
+//
+// Returns the new commit sha.
+async function publishStagingOverMain(repo, main, staging, message) {
+  const jsonHeaders = { ...ghHeaders(), 'Content-Type': 'application/json' };
+
+  async function need(url, init, what) {
+    const res = await fetch(url, init);
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`${what} failed (${res.status}): ${body.slice(0, 200)}`);
+    }
+    return res.json();
+  }
+
+  const mainRef = await need(
+    `${GH_API}/repos/${repo}/git/ref/heads/${encodeURIComponent(main)}`,
+    { headers: ghHeaders() },
+    'read main ref'
+  );
+  const stagingRef = await need(
+    `${GH_API}/repos/${repo}/git/ref/heads/${encodeURIComponent(staging)}`,
+    { headers: ghHeaders() },
+    'read staging ref'
+  );
+  const stagingCommit = await need(
+    `${GH_API}/repos/${repo}/git/commits/${stagingRef.object.sha}`,
+    { headers: ghHeaders() },
+    'read staging commit'
+  );
+
+  const merged = await need(
+    `${GH_API}/repos/${repo}/git/commits`,
+    {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({
+        message: `${message} (auto-resolved: staging content wins)`,
+        tree: stagingCommit.tree.sha,
+        parents: [mainRef.object.sha, stagingRef.object.sha],
+      }),
+    },
+    'create merge commit'
+  );
+
+  // Not a force update: the new commit has main's head as a parent, so this is
+  // a fast-forward from main's point of view and nothing on main is discarded.
+  await need(
+    `${GH_API}/repos/${repo}/git/refs/heads/${encodeURIComponent(main)}`,
+    {
+      method: 'PATCH',
+      headers: jsonHeaders,
+      body: JSON.stringify({ sha: merged.sha }),
+    },
+    'move main to the merge commit'
+  );
+
+  return merged.sha;
+}
+
 export default async function handler(req, res) {
   const { repo, main, staging } = cfg();
 
@@ -124,32 +196,43 @@ export default async function handler(req, res) {
         body: JSON.stringify({ base: main, head: staging, commit_message }),
       });
 
-      // 204 = nothing to merge (already up to date); 409 = merge conflict.
+      // 204 = nothing to merge (already up to date).
       if (r.status === 204) {
         return res.status(200).json({ ok: true, nothing: true, message: 'Already up to date.' });
       }
+
+      let sha = null;
+      let autoResolved = false;
+
       if (r.status === 409) {
-        return res.status(409).json({ ok: false, error: 'Merge conflict — staging and main have diverged.' });
-      }
-      if (!r.ok) {
+        // Diverged generated files — see publishStagingOverMain(). Staff should
+        // never be asked to reason about a git conflict they did not create.
+        console.warn('[publish] merge conflict; resolving in favour of staging');
+        sha = await publishStagingOverMain(repo, main, staging, commit_message);
+        autoResolved = true;
+      } else if (!r.ok) {
         const text = await r.text();
         return res.status(r.status).json({ ok: false, error: `GitHub merge failed: ${text}` });
+      } else {
+        const merge = await r.json();
+        sha = merge.sha || null;
       }
-
-      const merge = await r.json();
-      const sha = merge.sha || null;
 
       // Best-effort publish_log entry (service role bypasses RLS).
       if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
         try {
           const admin = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
-          await admin.from('publish_log').insert({ merged_sha: sha, summary: commit_message, actor: authed.userId });
+          await admin.from('publish_log').insert({
+            merged_sha: sha,
+            summary: autoResolved ? `${commit_message} (auto-resolved)` : commit_message,
+            actor: authed.userId,
+          });
         } catch (logErr) {
           console.error('[publish] publish_log insert failed:', logErr);
         }
       }
 
-      return res.status(200).json({ ok: true, sha });
+      return res.status(200).json({ ok: true, sha, auto_resolved: autoResolved });
     }
 
     res.setHeader('Allow', 'GET, POST');
