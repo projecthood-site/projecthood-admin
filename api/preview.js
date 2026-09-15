@@ -44,6 +44,7 @@ const ALLOWED_PAGES = new Set([
   'news.html',
   'partner.html',
   'contact.html',
+  'careers.html',
 ]);
 
 // The site repo is PUBLIC, so preview reads work with or without a credential.

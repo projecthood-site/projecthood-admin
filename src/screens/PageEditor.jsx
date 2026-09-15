@@ -38,6 +38,7 @@ const PAGES = [
   { name: 'News', path: 'news.html' },
   { name: 'Partner', path: 'partner.html' },
   { name: 'Contact', path: 'contact.html' },
+  { name: 'Careers', path: 'careers.html' },
 ];
 
 const SUGGESTIONS = ['Change the hero headline', 'Add a paragraph to the intro'];
