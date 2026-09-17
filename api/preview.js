@@ -144,6 +144,28 @@ async function fetchStagedHtml(repo, staging, page) {
   return { ok: false, status: rawRes.status, body: await rawRes.text().catch(() => '') };
 }
 
+// The built pages reference their assets relatively: css/…, js/…, img/… and
+// docs/…. Those are the only relative asset paths the build emits, so point
+// them straight at the staging branch on jsDelivr.
+//
+// This replaces what a <base> tag used to do. A base tag is the obvious way to
+// solve it and the wrong one: it also rehomes fragment-only links (#section)
+// and root-relative paths (/api/preview?…), so every in-page anchor and every
+// rewritten nav link ends up pointing at the CDN instead of at this page.
+const ASSET_DIRS = ['css', 'js', 'img', 'docs'];
+
+// Every page the site publishes. ALLOWED_PAGES is the subset staff may EDIT,
+// which is a different question from whether a link to it should work — the
+// calendar and the privacy policy are real pages, they are just not
+// staff-editable, so this endpoint will not serve them.
+const SITE_PAGES = new Set([...ALLOWED_PAGES, 'events.html', 'privacy.html', '404.html']);
+
+function rewriteAssetUrls(html, cdnBase) {
+  const dirs = ASSET_DIRS.join('|');
+  const pattern = new RegExp(`\\b(href|src)="((?:${dirs})/[^"]*)"`, 'gi');
+  return html.replace(pattern, (_whole, attr, path) => `${attr}="${cdnBase}${path}"`);
+}
+
 // The build strips ".html" from internal hrefs, so a page link looks like
 // href="careers#impact-officer" or href="programs" or href="/". Under the
 // <base> tag those resolve to the CDN and leave the preview. Point them back
@@ -163,7 +185,15 @@ function rewriteInternalLinks(html, currentPage) {
     const resolved = slug === '' ? (target.startsWith('/') ? 'index' : currentSlug) : slug;
 
     if (resolved === currentSlug) return `href="${frag || '#'}"`;
-    if (!ALLOWED_PAGES.has(`${resolved}.html`)) return whole;   // an asset, not a page
+    if (!ALLOWED_PAGES.has(`${resolved}.html`)) {
+      // A real page this endpoint will not serve (the calendar, the privacy
+      // policy). Send it to the live site rather than leaving a relative link
+      // that 404s on the admin domain.
+      if (SITE_PAGES.has(`${resolved}.html`)) {
+        return `href="https://projecthood.org/${resolved}${frag}"`;
+      }
+      return whole;   // an asset, not a page
+    }
     return `href="/api/preview?page=${encodeURIComponent(`${resolved}.html`)}${frag}"`;
   });
 }
@@ -230,25 +260,25 @@ export default async function handler(req, res) {
 
     let html = result.html;
 
-    // 3) Inject a <base> so RELATIVE asset URLs resolve from staging via jsDelivr,
-    //    plus a tiny style so the page renders nicely inside an iframe.
-    const baseTag =
-      `<base href="https://cdn.jsdelivr.net/gh/${repo}@${staging}/">` +
-      `<style>html,body{margin:0}</style>`;
+    // 3) Point relative asset URLs at the staging branch on jsDelivr. Done by
+    //    rewriting the URLs rather than with a <base> tag — see
+    //    rewriteAssetUrls for why the base tag had to go.
+    html = rewriteAssetUrls(html, `https://cdn.jsdelivr.net/gh/${repo}@${staging}/`);
 
-    const headMatch = html.match(/<head[^>]*>/i);
-    if (headMatch) {
-      html = html.replace(headMatch[0], `${headMatch[0]}${baseTag}`);
-    } else {
-      html = baseTag + html;
-    }
-
-    // 4) Repoint internal links so the preview is navigable (see
-    //    rewriteInternalLinks — the <base> tag above would otherwise send every
-    //    one of them to the CDN).
+    // 4) Repoint internal links: anchors stay on this page, links to other
+    //    pages go through the preview endpoint.
     html = rewriteInternalLinks(html, page);
 
-    // 5) Return the HTML, always fresh.
+    // 5) A tiny style so the page sits flush inside the preview iframe.
+    const styleTag = `<style>html,body{margin:0}</style>`;
+    const headMatch = html.match(/<head[^>]*>/i);
+    if (headMatch) {
+      html = html.replace(headMatch[0], `${headMatch[0]}${styleTag}`);
+    } else {
+      html = styleTag + html;
+    }
+
+    // 6) Return the HTML, always fresh.
     return sendHtml(res, 200, html);
   } catch (err) {
     console.error('[preview] error:', err);
