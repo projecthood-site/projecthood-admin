@@ -144,6 +144,30 @@ async function fetchStagedHtml(repo, staging, page) {
   return { ok: false, status: rawRes.status, body: await rawRes.text().catch(() => '') };
 }
 
+// The build strips ".html" from internal hrefs, so a page link looks like
+// href="careers#impact-officer" or href="programs" or href="/". Under the
+// <base> tag those resolve to the CDN and leave the preview. Point them back
+// at the preview endpoint instead, and turn links to the CURRENT page into
+// plain fragments so in-page anchors jump rather than navigate.
+function rewriteInternalLinks(html, currentPage) {
+  const currentSlug = currentPage.replace(/\.html$/i, '');
+  return html.replace(/href="([^"]*)"/gi, (whole, href) => {
+    // Leave absolute URLs, protocol-relative URLs, schemes and bare fragments.
+    if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(href)) return whole;
+
+    const [target, fragment] = href.split('#');
+    const slug = target.replace(/^\//, '').replace(/\.html$/i, '');
+    const frag = fragment ? `#${fragment}` : '';
+
+    // href="" or href="#x" on the current page, and href="/" meaning index.
+    const resolved = slug === '' ? (target.startsWith('/') ? 'index' : currentSlug) : slug;
+
+    if (resolved === currentSlug) return `href="${frag || '#'}"`;
+    if (!ALLOWED_PAGES.has(`${resolved}.html`)) return whole;   // an asset, not a page
+    return `href="/api/preview?page=${encodeURIComponent(`${resolved}.html`)}${frag}"`;
+  });
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET');
@@ -219,7 +243,12 @@ export default async function handler(req, res) {
       html = baseTag + html;
     }
 
-    // 4) Return the HTML, always fresh.
+    // 4) Repoint internal links so the preview is navigable (see
+    //    rewriteInternalLinks — the <base> tag above would otherwise send every
+    //    one of them to the CDN).
+    html = rewriteInternalLinks(html, page);
+
+    // 5) Return the HTML, always fresh.
     return sendHtml(res, 200, html);
   } catch (err) {
     console.error('[preview] error:', err);
