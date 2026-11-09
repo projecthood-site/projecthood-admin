@@ -122,6 +122,8 @@ export default function Events() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [uploading, setUploading] = useState(false);
+  const [reading, setReading] = useState(false);
+  const [flyerNotes, setFlyerNotes] = useState('');
 
   // Delete confirm + RSVP viewer modals.
   const [confirmDelete, setConfirmDelete] = useState(null);
@@ -157,11 +159,13 @@ export default function Events() {
   function openCreate() {
     setEditing(null);
     setForm(EMPTY_FORM);
+    setFlyerNotes('');
     setShowForm(true);
   }
 
   function openEdit(ev) {
     setEditing(ev);
+    setFlyerNotes('');
     setForm({
       title: ev.title || '',
       description: ev.description || '',
@@ -200,7 +204,53 @@ export default function Events() {
     }
     const { data } = supabase.storage.from('event-flyers').getPublicUrl(path);
     setForm((f) => ({ ...f, flyer_url: data.publicUrl }));
-    toast('Flyer uploaded.');
+    readFlyerInto(data.publicUrl);
+  }
+
+  // Read the flyer and offer what it says. Only BLANK fields are filled: if
+  // someone has already typed a title, a machine reading of a poster does not
+  // get to overwrite it. Nothing is saved here either — the form still has to
+  // be reviewed and submitted by a person, because flyers are ambiguous and
+  // this will sometimes be wrong.
+  async function readFlyerInto(url) {
+    setReading(true);
+    setFlyerNotes('');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/api/read-flyer', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ imageUrl: url }),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast(out.error || 'Flyer uploaded, but it could not be read.');
+        return;
+      }
+
+      const LABELS = { title: 'title', starts_at: 'date and time', location: 'location', description: 'description' };
+      const next = { ...form, flyer_url: url };
+      const filled = [];
+      for (const key of ['title', 'starts_at', 'location', 'description']) {
+        if (!String(form[key] || '').trim() && String(out[key] || '').trim()) {
+          next[key] = out[key];
+          filled.push(LABELS[key]);
+        }
+      }
+      setForm(next);
+      if (out.notes) setFlyerNotes(out.notes);
+
+      toast(filled.length
+        ? `Read from the flyer: ${filled.join(', ')}. Check it before saving.`
+        : 'Flyer uploaded. Nothing new to fill in from it.');
+    } catch (err) {
+      toast('Flyer uploaded, but it could not be read.');
+    } finally {
+      setReading(false);
+    }
   }
 
   async function saveEvent(e) {
@@ -384,10 +434,20 @@ export default function Events() {
                   onChange={(e) => uploadFlyer(e.target.files && e.target.files[0])}
                 />
                 <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
-                  Used as the event's picture on the website. JPG or PNG, up to 5 MB.
+                  Used as the event's picture on the website, and read to fill in the fields below. JPG or PNG, up to 5 MB.
                 </span>
                 {uploading && (
                   <span style={{ display: 'block', fontSize: 12, marginTop: 6 }}>Uploading\u2026</span>
+                )}
+                {reading && (
+                  <span style={{ display: 'block', fontSize: 12, marginTop: 6 }}>
+                    Reading the flyer\u2026
+                  </span>
+                )}
+                {flyerNotes && !reading && (
+                  <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>
+                    Worth checking: {flyerNotes}
+                  </span>
                 )}
                 {form.flyer_url && !uploading && (
                   <span style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 8 }}>
