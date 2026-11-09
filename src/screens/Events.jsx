@@ -7,7 +7,7 @@ import Modal from '../components/Modal';
 import Pill from '../components/StatusPill';
 
 const TINT_OPTIONS = ['green', 'amber', 'purple', 'blue', 'red'];
-const EMPTY_FORM = { title: '', description: '', starts_at: '', location: '', color_tint: 'green', capacity: '' };
+const EMPTY_FORM = { title: '', description: '', starts_at: '', location: '', color_tint: 'green', capacity: '', flyer_url: '' };
 
 // Roles: viewer = read-only; author/editor/owner can create/edit/set status;
 // editor/owner can delete. (Server RLS is the real guard — this only shapes UI.)
@@ -121,6 +121,7 @@ export default function Events() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
+  const [uploading, setUploading] = useState(false);
 
   // Delete confirm + RSVP viewer modals.
   const [confirmDelete, setConfirmDelete] = useState(null);
@@ -130,7 +131,7 @@ export default function Events() {
     setState({ loading: true, error: null });
     const { data, error } = await supabase
       .from('events')
-      .select('id, title, description, starts_at, location, color_tint, status, capacity')
+      .select('id, title, description, starts_at, location, color_tint, status, capacity, flyer_url')
       .order('starts_at', { ascending: true });
 
     if (error) {
@@ -168,8 +169,38 @@ export default function Events() {
       location: ev.location || '',
       color_tint: ev.color_tint || 'green',
       capacity: ev.capacity != null ? String(ev.capacity) : '',
+      flyer_url: ev.flyer_url || '',
     });
     setShowForm(true);
+  }
+
+  // Flyers go to the event-flyers bucket, which is public-read: the file has to
+  // be fetchable by the website build and by anyone loading the events page.
+  // Only owner/editor/author may write to it, enforced by storage policy.
+  async function uploadFlyer(file) {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast('Please choose an image file (JPG or PNG).');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast('That image is larger than 5 MB. Please use a smaller one.');
+      return;
+    }
+    setUploading(true);
+    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+    const path = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const { error } = await supabase.storage
+      .from('event-flyers')
+      .upload(path, file, { cacheControl: '3600', upsert: false, contentType: file.type });
+    setUploading(false);
+    if (error) {
+      toast(errMsg(error, "Couldn't upload that flyer"));
+      return;
+    }
+    const { data } = supabase.storage.from('event-flyers').getPublicUrl(path);
+    setForm((f) => ({ ...f, flyer_url: data.publicUrl }));
+    toast('Flyer uploaded.');
   }
 
   async function saveEvent(e) {
@@ -186,6 +217,7 @@ export default function Events() {
       location: form.location.trim() || null,
       color_tint: form.color_tint,
       capacity: form.capacity ? Number(form.capacity) : null,
+      flyer_url: form.flyer_url || null,
     };
 
     let error;
@@ -340,6 +372,40 @@ export default function Events() {
               <label style={{ display: 'block' }}>
                 <span className="label">Location</span>
                 <input className="field" style={{ marginTop: 6 }} value={form.location} onChange={set('location')} />
+              </label>
+              <label style={{ display: 'block' }}>
+                <span className="label">Flyer</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="field"
+                  style={{ marginTop: 6 }}
+                  disabled={uploading}
+                  onChange={(e) => uploadFlyer(e.target.files && e.target.files[0])}
+                />
+                <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
+                  Used as the event's picture on the website. JPG or PNG, up to 5 MB.
+                </span>
+                {uploading && (
+                  <span style={{ display: 'block', fontSize: 12, marginTop: 6 }}>Uploading\u2026</span>
+                )}
+                {form.flyer_url && !uploading && (
+                  <span style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 8 }}>
+                    <img
+                      src={form.flyer_url}
+                      alt="Flyer preview"
+                      style={{ width: 56, height: 56, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--line)' }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      style={{ fontSize: 12, padding: '4px 10px' }}
+                      onClick={() => setForm((f) => ({ ...f, flyer_url: '' }))}
+                    >
+                      Remove
+                    </button>
+                  </span>
+                )}
               </label>
               <label style={{ display: 'block' }}>
                 <span className="label">Color tint</span>
